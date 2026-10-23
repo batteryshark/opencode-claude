@@ -32,8 +32,8 @@ async function main() {
   const { post, proxy } = await startMockedProxy("legacy-boundaries");
   const { getForeignSessionId, getSessionTurns } = await import("../src/session-store.ts");
   // The store as an older build left it: boundaries without sessionId.
-  const storeFile = join(process.env.XDG_DATA_HOME!, "opencode-claude", "sessions.json");
-  mkdirSync(join(process.env.XDG_DATA_HOME!, "opencode-claude"), { recursive: true });
+  const storeFile = join(process.env.XDG_DATA_HOME!, "batteryshark-claude-code", "sessions.json");
+  mkdirSync(join(process.env.XDG_DATA_HOME!, "batteryshark-claude-code"), { recursive: true });
   const legacyTurns = (leaves: string[]) =>
     leaves.map((leafUuid, i) => ({
       count: i + 1,

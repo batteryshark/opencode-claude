@@ -14,7 +14,7 @@ async function main() {
   const tmp = mkdtempSync(join(tmpdir(), "opencode-claude-store-"));
   process.env.XDG_DATA_HOME = tmp;
   const store = await import("../src/session-store.ts");
-  const path = join(tmp, "opencode-claude", "sessions.json");
+  const path = join(tmp, "batteryshark-claude-code", "sessions.json");
 
   // Our writes are indented; a compact file shows nothing rewrote it.
   const compact = () => writeFileSync(path, JSON.stringify(JSON.parse(readFileSync(path, "utf8"))));

@@ -1,4 +1,62 @@
-# opencode-claude
+# Maintained local chief overlay
+
+MIT fork of [OpenChamber's bridge](https://github.com/openchamber/opencode-claude),
+based on release 1.5.0. Original attribution and README follow this note.
+Npm publication is disabled (`private: true` plus a failing prepublish hook).
+
+Build a pinned revision with `bun install --frozen-lockfile && bun run build`.
+Keep the actual stock plugin globally installed; add this distinct local plugin
+**only in the chief's Location**, after stock:
+
+```jsonc
+{
+  "plugins": [{
+    "package": "/managed/revision/dist/index.js",
+    "options": {
+      "routing": "overlay",
+      "systemPrompt": { "agent": "chief-of-staff", "source": "agent" }
+    }
+  }]
+}
+```
+
+`batteryshark.claude-code` registers no provider/auth/catalog. Only matching chief
+primary/compaction calls on `claude-code` change routing. Other agents and
+title/generate calls stay stock. No prompt headers or host environment mutation.
+Unknown options fail closed. Without overlay options, standalone preset/provider
+behavior and `{debug:true}` remain available; debug is now module-local rather
+than changing `process.env`. It is not a replacement for global stock installation.
+
+The documented SDK array boundary separates a **static** effective-role+runtime/tool
+routing prefix from native model/date/environment, variable catalogs, project
+instructions and session context. Missing/blank roles keep the exact preset and
+append. No coding system is silently reinserted. SDK settings/loading remain as
+before; identical prefixes are not proof of cache hits.
+The role is trimmed, otherwise unchanged, including its own approval, privacy,
+destruction and financial constraints. The bridge adds no redundant safety paragraph.
+
+**Remaining SDK limitation:** custom mode retains independent CLAUDE.md/user-date
+and settings-permitted auto-memory **contents** injection. It skips the ordinary
+preset git-status snapshot and auto-memory directory/guidance sections. No public
+dynamic-section generator is exposed, so this fork does not invent replacements
+or collect git/memory context itself. Native git-repository facts/context survive.
+Exact preset-context equivalence and rollout acceptance are not claimed.
+
+The fork owns an ephemeral listener, separate reload-stable pool and session store.
+Continuation/profile/compaction keys include Location, native session and policy;
+custom tool-ID fallback cannot adopt stock or incompatible turns. Compatible fork
+turns survive reload; missing profiles fall back to native history/utility summary.
+Rollback removes only this local entry, never stops or clears stock.
+
+Offline: `bun test/run.ts` (not `test:haiku`). The built overlay regression imports
+the genuine stock release too; the SDK source regression executes packaged context
+selection with mocked inputs, no inference or memory traversal. That source proof
+is deliberately tied to SDK0.3.224 and must be re-inspected when updating the lock.
+Live matched cache counts and host acceptance remain separate rollout checks.
+
+---
+
+# opencode-claude (upstream README)
 
 [![npm](https://img.shields.io/npm/v/%40openchamber%2Fopencode-claude?style=flat&labelColor=100F0F&color=24837B)](https://www.npmjs.com/package/@openchamber/opencode-claude)
 [![GitHub release](https://img.shields.io/github/v/release/openchamber/opencode-claude?style=flat&labelColor=100F0F&color=205EA6)](https://github.com/openchamber/opencode-claude/releases/latest)

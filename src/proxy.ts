@@ -9,11 +9,14 @@
  * tool_calls; the follow-up request with tool results resumes the turn.
  */
 import { createHash, randomUUID } from "node:crypto";
+import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "@anthropic-ai/claude-agent-sdk";
+import { assembleAgentBase, fingerprint, POLICY_HEADER, PROMPT_MODE, PROMPT_MODE_HEADER } from "./prompt-policy.js";
 import { currentHost, mcpToolName, openCodeToolName } from "./host.js";
 import {
   mcpInstructions,
   openCodeInstructionFiles,
   sessionContextBlocks,
+  nativeEnvironmentContext,
 } from "./opencode-context.js";
 import {
   bridgeRuntime,
@@ -204,7 +207,7 @@ export const SSE_HEARTBEAT_MS = 5_000;
  * published through the config hook so OpenCode always hits the
  * process that owns the listener (no static 8787 requirement).
  */
-const REQUESTED_PROXY_PORT: number = (() => {
+let REQUESTED_PROXY_PORT: number = (() => {
   const raw = process.env.OPENCODE_CLAUDE_PROXY_PORT;
   const parsed = raw ? Number(raw) : NaN;
   return Number.isInteger(parsed) && parsed >= 0 && parsed < 65536
@@ -249,6 +252,15 @@ type ChatCompletionRequest = {
 
 let server: ReturnType<typeof Bun.serve> | null = null;
 let proxyPort: number | null = null;
+let overlayOnly = false;
+
+/** An overlay always owns its listener; stock health responses are not ownership. */
+export function configureOverlayProxy(): void {
+  if (overlayOnly) return;
+  if (server || proxyPort) throw new Error("Overlay must be configured before proxy startup");
+  overlayOnly = true;
+  REQUESTED_PROXY_PORT = 0;
+}
 
 /** Injectable for smoke tests — production path always uses startClaudeQuery. */
 let queryStarter: typeof startClaudeQuery = startClaudeQuery;
@@ -588,12 +600,13 @@ function selectionFromRequest(
 
 const META_REQUEST_MODEL = "claude-haiku-4-5";
 
-type ClaudeSystemPrompt = {
+type ClaudePresetPrompt = {
   type: "preset";
   preset: "claude_code";
   append?: string;
   excludeDynamicSections?: boolean;
 };
+type ClaudeSystemPrompt = ClaudePresetPrompt | string | string[];
 
 /**
  * Claude Code puts the working directory, memory path and git status into its
@@ -614,7 +627,11 @@ type ChatTurnProfile = {
   effort?: ClaudeEffort;
 };
 
-const chatTurnProfiles = new Map<string, ChatTurnProfile>();
+const PROFILE_KEY = Symbol.for("batteryshark.claude-code/prompt-profiles/v1");
+const promptRuntime = ((globalThis as Record<symbol, unknown>)[PROFILE_KEY] ??= {
+  profiles: new Map<string, ChatTurnProfile>(), active: new Map<string, string>(),
+}) as { profiles: Map<string, ChatTurnProfile>; active: Map<string, string> };
+const chatTurnProfiles = promptRuntime.profiles;
 const MAX_CHAT_TURN_PROFILES = 64;
 
 /** Where in the chat's Claude session a compaction summary picks up. */
@@ -813,6 +830,12 @@ async function handleChatCompletions(
 ): Promise<Response> {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const sessionHeader = req.headers.get(SESSION_HEADER);
+  const customMode = req.headers.get(PROMPT_MODE_HEADER) === PROMPT_MODE;
+  const policy = req.headers.get(POLICY_HEADER);
+  if (overlayOnly && (!customMode || !policy || !sessionHeader ||
+      !["primary", "compaction"].includes(req.headers.get(KIND_HEADER) ?? ""))) {
+    return new Response("Scoped overlay request required", { status: 400 });
+  }
   const metaKind = resolveMetaKind(
     req.headers.get(KIND_HEADER),
     sessionHeader,
@@ -821,9 +844,27 @@ async function handleChatCompletions(
   // A title or generate call without a session belongs to no chat: keyed
   // by its prompt, concurrent calls sharing a preamble stopped each other.
   const standalone = !sessionHeader && (metaKind === "title" || metaKind === "generate");
+  const scope = customMode ? fingerprint([policy, sessionHeader, req.headers.get(DIRECTORY_HEADER),
+    selectionFromRequest(req, body), new Date().toISOString().slice(0, 10), process.platform]) : "";
+  const firstNonSystem = messages.findIndex(m => m.role !== "system");
+  const leadingSystem = messages.slice(0, firstNonSystem < 0 ? messages.length : firstNonSystem);
+  const role = customAgentPrompt(leadingSystem);
+  // SDK snapshots cannot retain stale dynamic context after a native system
+  // update. History/user text is deliberately excluded from this fingerprint.
+  const roleKey = `fork:${scope}:${fingerprint([role, leadingSystem])}`;
+  const scopedChatKey = customMode
+    ? (metaKind === "summary" ? promptRuntime.active.get(scope) ?? roleKey : roleKey)
+    : sessionHeader || conversationKeyFromMessages(messages);
+  if (customMode && metaKind === null) {
+    const previous = promptRuntime.active.get(scope);
+    if (previous && previous !== scopedChatKey) await stopConversationBridges(previous, "Prompt policy changed");
+    promptRuntime.active.delete(scope);
+    if (promptRuntime.active.size >= MAX_CHAT_TURN_PROFILES) promptRuntime.active.delete(promptRuntime.active.keys().next().value!);
+    promptRuntime.active.set(scope, scopedChatKey);
+  }
   const conversationKey =
     requestKeyNamespace(metaKind) +
-    (sessionHeader || (standalone ? `req_${randomUUID()}` : conversationKeyFromMessages(messages)));
+    (customMode ? scopedChatKey : sessionHeader || (standalone ? `req_${randomUUID()}` : conversationKeyFromMessages(messages)));
   // OpenCode is compacting this chat. The Claude session it would resume
   // still holds the full uncompacted context, so drop the binding: the next
   // turn starts a fresh Claude session from the compacted history instead.
@@ -832,8 +873,10 @@ async function handleChatCompletions(
   // context size, and OpenCode compacts again, in a loop. Stop it first, so
   // its last events can't write the binding back either.
   let summaryResume: SummaryResumePoint | null = null;
+  let summaryPrompt: ClaudeSystemPrompt | undefined;
   if (metaKind === "summary") {
-    const chatKey = sessionHeader || conversationKeyFromMessages(messages);
+    const chatKey = scopedChatKey;
+    if (customMode) summaryPrompt = chatTurnProfiles.get(chatKey)?.systemPrompt;
     const stopped = await stopConversationBridges(chatKey, "Chat compacted");
     if (stopped > 0) {
       log.info("[opencode-claude] stopped the turn of a chat being compacted", {
@@ -864,7 +907,7 @@ async function handleChatCompletions(
   }
   let existing = findBridgeByConversation(conversationKey);
   // Fallback: match by tool_call_id when the session header is missing/changed.
-  if ((!existing || existing.pendingTools.size === 0) && toolResults.size > 0) {
+  if (!customMode && (!existing || existing.pendingTools.size === 0) && toolResults.size > 0) {
     for (const toolCallId of toolResults.keys()) {
       const byTool = findBridgeByPendingTool(toolCallId);
       if (byTool) {
@@ -997,6 +1040,7 @@ async function handleChatCompletions(
       stream,
       toolResults,
       summaryResume,
+      summaryPrompt,
       releaseSpawnLock,
     });
   } finally {
@@ -1038,6 +1082,7 @@ async function startNewTurn(input: {
   stream: boolean;
   toolResults: Map<string, McpToolResultContent[]>;
   summaryResume?: SummaryResumePoint | null;
+  summaryPrompt?: ClaudeSystemPrompt;
   releaseSpawnLock: () => void;
 }): Promise<Response> {
   const {
@@ -1095,7 +1140,7 @@ async function startNewTurn(input: {
     ? decodeURIComponent(directoryHeader)
     : undefined;
   const cwd =
-    process.env.OPENCODE_CLAUDE_CWD || requestDirectory || process.cwd();
+    (req.headers.get(PROMPT_MODE_HEADER) === PROMPT_MODE ? requestDirectory : process.env.OPENCODE_CLAUDE_CWD || requestDirectory) || process.cwd();
   const bridgeId = randomUUID();
   const pendingTools = new Map<string, ParkedToolCall>();
   let handle: StoppableClaudeQueryHandle | null = null;
@@ -1508,13 +1553,15 @@ async function startNewTurn(input: {
   const mcpNotes = openCodeToolNames.includes("execute") ? mcpInstructions(messages) : "";
   // Stored in the chat's profile below, so a summary that resumes the chat
   // repeats the same prompt, flag included, and still reads from the cache.
-  const chatSystemPrompt: ClaudeSystemPrompt = {
+  const customBase = req.headers.get(PROMPT_MODE_HEADER) === PROMPT_MODE
+    ? assembleAgentBase(agentPrompt) : undefined;
+  const presetPrompt: ClaudePresetPrompt = {
     type: "preset",
     preset: "claude_code",
     ...(excludeDynamicSections() ? { excludeDynamicSections: true } : {}),
     append: [
       buildRuntimeInstructions(),
-      ...(agentPrompt
+      ...(agentPrompt && !customBase
         ? [
             `# Agent role (from the agent configuration in ${currentHost().name}; it defines who you are in this session and takes precedence over the generic role above)\n\n${agentPrompt}`,
           ]
@@ -1542,6 +1589,22 @@ async function startNewTurn(input: {
         : []),
     ].join("\n\n"),
   };
+  const chatSystemPrompt: ClaudeSystemPrompt = customBase
+    ? [
+        [customBase, buildRuntimeInstructions(),
+          `Built-in Claude Code tools are disabled. Use only the ${mcpToolName("*")} tools provided for this turn; they execute via ${currentHost().name}.`,
+          "Batch independent tool calls into a single turn instead of calling them one at a time.",
+        ].join("\n\n"),
+        SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+        [
+          nativeEnvironmentContext(messages),
+          ...(bridgeOpenCodeTools && codeMode ? [`${codeMode}\n\nThe \`execute\` tool above is ${mcpToolName("execute")}.`] : []),
+          ...(bridgeOpenCodeTools && mcpNotes ? [mcpNotes] : []),
+          ...(bridgeOpenCodeTools && skills ? [`${skills}\n\nThe skill tool above is ${mcpToolName("skill")}.`] : []),
+          ...(instructionFiles ? [`# Project instructions (loaded by ${currentHost().name})\n\n${instructionFiles}`] : []),
+          ...(sessionContext ? [`# Session context (attached by ${currentHost().name})\n\n${sessionContext}`] : []),
+        ].filter(Boolean).join("\n\n"),
+      ] : presetPrompt;
   if (!isMetaRequest && sessionHeader) {
     // Most recent last; long-idle chats fall off.
     chatTurnProfiles.delete(conversationKey);
@@ -1629,10 +1692,11 @@ async function startNewTurn(input: {
     // Utility turns (titles, summaries, generate) need none of Claude Code's
     // coding instructions: a one-line prompt that names the host keeps them
     // ~15x smaller. Chat turns keep the Claude Code preset untouched.
-    systemPrompt: isMetaRequest ? UTILITY_SYSTEM_PROMPT : chatSystemPrompt,
+    systemPrompt: isMetaRequest ? input.summaryPrompt ?? UTILITY_SYSTEM_PROMPT : chatSystemPrompt,
   }));
 
   const bridge: ParkedBridge = {
+    nativeSessionID: sessionHeader ?? undefined,
     id: bridgeId,
     conversationKey,
     metaKind,

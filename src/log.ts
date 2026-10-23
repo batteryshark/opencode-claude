@@ -14,9 +14,18 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
-function debugEnabled(): boolean {
+let debugHolders = 0;
+
+/** Standalone debug option without mutating the shared host environment. */
+export function acquireDebugLogging(): () => void {
+  debugHolders++;
+  let released = false;
+  return () => { if (!released) { released = true; debugHolders--; } };
+}
+
+export function debugEnabled(): boolean {
   const value = (process.env.OPENCODE_CLAUDE_DEBUG ?? "").toLowerCase();
-  return value === "1" || value === "true" || value === "yes" || value === "on";
+  return debugHolders > 0 || value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
 function logFilePath(): string {

@@ -12,6 +12,7 @@
 // Type-only: the v2 host loads a plain `{ id, setup }` object, so the plugin
 // needs none of OpenCode's runtime packages.
 import type { Model, Plugin, Provider } from "@opencode/plugin";
+import { fingerprint, parseForkOptions, POLICY_HEADER, PROMPT_MODE, PROMPT_MODE_HEADER } from "./prompt-policy.js";
 import {
   DIRECTORY_HEADER,
   EFFORT_HEADER,
@@ -25,7 +26,7 @@ import {
   startClaudeCliLogin,
   submitClaudeCliLoginCode,
 } from "./cli-login.js";
-import { log } from "./log.js";
+import { acquireDebugLogging, log } from "./log.js";
 import {
   encodeClaudeModelSelection,
   resolveClaudeModelSelection,
@@ -46,6 +47,7 @@ import {
   releaseProxy,
   setModelFallbackHandler,
   startProxy,
+  configureOverlayProxy,
 } from "./proxy.js";
 
 export function applyClaudeRequestContextHeaders(
@@ -189,13 +191,29 @@ function currentProxyBaseUrl(): string {
  * relays the sign-in right after a successful install.
  */
 export const ClaudeCodePlugin: Plugin.Plugin = {
-  id: "openchamber.claude-code",
+  id: "batteryshark.claude-code",
   async setup(ctx) {
-    // `{ "package": "...", "options": { "debug": true } }` in opencode.json
-    // turns on the durable debug log without touching the server's env.
-    if ((ctx.options as { debug?: unknown } | undefined)?.debug === true) {
-      process.env.OPENCODE_CLAUDE_DEBUG ??= "1";
+    const options = parseForkOptions(ctx.options);
+    if (options.overlay) {
+      configureOverlayProxy();
+      await acquireProxy();
+      await ctx.session.hook("model.request", async (request) => {
+        if (request.agent !== options.agent || !["primary", "compaction"].includes(request.kind)) return;
+        const agent = await ctx.agent.get({ agentID: request.agent });
+        await startProxy();
+        request.baseURL = getClaudeProxyBaseUrl();
+        request.headers[PROMPT_MODE_HEADER] = PROMPT_MODE;
+        request.headers[POLICY_HEADER] = fingerprint({ agent, location: ctx.location });
+        request.headers[KIND_HEADER] = request.kind;
+        request.headers[EFFORT_HEADER] = encodeClaudeModelSelection(resolveClaudeModelSelection(request.model.id, request.model.variant));
+        applyClaudeRequestContextHeaders(request.headers, ctx.location.directory, request.sessionID);
+      }, { providerID: PROVIDER_ID });
+      const stopWatching = watchSessionInterrupts(ctx);
+      return async () => { stopWatching(); await releaseProxy(); };
     }
+    // Standalone defaults retain upstream provider/auth behavior. The overlay
+    // returns above and never registers or replaces those domains.
+    const stopDebugLogging = options.debug ? acquireDebugLogging() : () => {};
     const directory = ctx.location.directory;
     // Bind first (ephemeral port by default) so the provider points at the
     // live listener for this process.
@@ -279,6 +297,7 @@ export const ClaudeCodePlugin: Plugin.Plugin = {
     return async () => {
       stopWatching();
       await releaseProxy();
+      stopDebugLogging();
     };
   },
 };

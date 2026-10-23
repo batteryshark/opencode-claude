@@ -995,7 +995,7 @@ async function main() {
   }
 
   // Plugin export
-  assert.equal(ClaudeCodePlugin.id, "openchamber.claude-code");
+  assert.equal(ClaudeCodePlugin.id, "batteryshark.claude-code");
   assert.equal(typeof ClaudeCodePlugin.setup, "function");
   {
     const info: any = buildProviderInfo("http://127.0.0.1:1/v1");

@@ -36,6 +36,8 @@ esac
   process.env.XDG_DATA_HOME = tmp;
 
   const { ClaudeCodePlugin } = await import("../src/index.ts");
+  const { debugEnabled } = await import("../src/log.ts");
+  const debugEnv = process.env.OPENCODE_CLAUDE_DEBUG;
   const started = Date.now();
   const registered: number[] = [];
   const hooked: number[] = [];
@@ -44,7 +46,7 @@ esac
     return {
       stop,
       ctx: {
-        options: {},
+        options: { debug: true },
         location: { directory: tmp },
         provider: {
           transform: async (fn: (p: { add: (x: unknown) => void }) => void) => {
@@ -79,6 +81,8 @@ esac
   assert.equal(registered.length, 2, "both providers registered while the probe runs");
   assert.equal(hooked.length, 2, "both request hooks registered while the probe runs");
   const disposers = await setups;
+  assert.equal(debugEnabled(), true, "standalone debug option still enables logging");
+  assert.equal(process.env.OPENCODE_CLAUDE_DEBUG, debugEnv, "debug option does not mutate shared environment");
   const authCalls = readFileSync(calls, "utf8").split("\n").filter((l) => l.startsWith("auth"));
   assert.equal(authCalls.length, 1, "one shared probe");
   for (const dispose of disposers) await (dispose as () => Promise<void>)();

@@ -1,8 +1,8 @@
 /**
  * Parts of OpenCode's system prompt that are the user's own setup rather
  * than OpenCode's boilerplate: project instruction files, MCP server notes
- * and the session context a host attached. The rest of that prompt (its stock prompt, model identity, date and
- * environment) is not forwarded; Claude Code brings its own.
+ * and the session context a host attached. The preset supplies its own environment;
+ * custom prompts instead forward only the known native identity/date/env sections.
  */
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -180,4 +180,16 @@ function leadingSystemEnd(messages: MessageLike[]): number {
 export function sessionContextBlocks(messages: MessageLike[]): string {
   const system = metaSystemPrompt(messages.slice(0, leadingSystemEnd(messages)));
   return [...system.matchAll(CONTEXT_BLOCK)].map((m) => m[0]).join("\n\n");
+}
+
+/** Known native identity/date/environment sections, never a user's quoted text.
+ * The preset supplied its own environment; a custom prompt must carry these.
+ * Do not forward the rest of OpenCode's coding system or arbitrary headings.
+ */
+export function nativeEnvironmentContext(messages: MessageLike[]): string {
+  const system = metaSystemPrompt(messages.slice(0, leadingSystemEnd(messages))).replace(/\r\n/g, "\n");
+  const model = system.match(/^# Your Model[\t ]*\n(?:[\t ]*\n)*(?:(?:- )?(?:Name|Provider ID|Model ID|Provider|Model):[^\n]*(?:\n|$))+/m)?.[0].trim();
+  const date = system.match(/^Today's date: [^\n]+$/m)?.[0];
+  const env = system.match(/^<env>\n[\s\S]*?\n<\/env>[\t ]*$/m)?.[0].trim();
+  return [model, date, env].filter(Boolean).join("\n\n");
 }

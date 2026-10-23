@@ -285,6 +285,7 @@ export type StartClaudeQueryParams = {
   fastMode?: boolean;
   systemPrompt?:
     | string
+    | string[]
     | {
         type: "preset";
         preset: "claude_code";
@@ -444,7 +445,12 @@ export async function startClaudeQuery(
     typeof params.systemPrompt === "string"
       ? null
       : nonEmptyRecord(params.systemPrompt);
-  if (customSystemPrompt) {
+  if (Array.isArray(params.systemPrompt) && params.systemPrompt.length > 0 &&
+      params.systemPrompt.every(block => typeof block === "string") &&
+      params.systemPrompt.some(block => block.trim())) {
+    // Preserve literal blocks and the SDK's documented dynamic boundary.
+    options.systemPrompt = [...params.systemPrompt];
+  } else if (customSystemPrompt) {
     options.systemPrompt = customSystemPrompt;
   } else if (
     presetSystemPrompt?.type === "preset" &&

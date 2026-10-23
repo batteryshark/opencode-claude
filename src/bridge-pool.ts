@@ -15,6 +15,7 @@ export type ParkedToolCall = {
 };
 
 export type ParkedBridge = {
+  nativeSessionID?: string;
   id: string;
   conversationKey: string;
   /** Request kind of the turn (title, summary, generate), null for chat. */
@@ -50,7 +51,7 @@ type BridgeRuntime = {
   shutdownTimer?: ReturnType<typeof setTimeout>;
 };
 
-const RUNTIME_KEY = Symbol.for("@openchamber/opencode-claude/bridge-runtime/v1");
+const RUNTIME_KEY = Symbol.for("batteryshark.claude-code/bridge-runtime/v1");
 
 export const bridgeRuntime: BridgeRuntime = ((globalThis as Record<symbol, unknown>)[
   RUNTIME_KEY
@@ -172,7 +173,7 @@ export async function stopConversationBridges(
 export function closeSessionBridges(sessionId: string): number {
   let closed = 0;
   for (const bridge of [...bridges.values()]) {
-    if (bridge.conversationKey === sessionId) {
+    if ((bridge.nativeSessionID ?? bridge.conversationKey) === sessionId) {
       void stopBridge(bridge.id);
       closed += 1;
     }

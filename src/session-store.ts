@@ -62,7 +62,7 @@ const MAX_TURN_BOUNDARIES = 100;
 function storePath(): string {
   const xdg = process.env.XDG_DATA_HOME;
   const base = xdg ? xdg : join(homedir(), ".local", "share");
-  return join(base, "opencode-claude", "sessions.json");
+  return join(base, "batteryshark-claude-code", "sessions.json");
 }
 
 function readStore(): Record<string, ClaudeSessionBinding> {
